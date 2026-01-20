@@ -18,30 +18,20 @@ const app = express();
 // MIDDLEWARE
 // ============================================
 
-// Security headers
 app.use(helmet());
-
-// CORS
 app.use(cors({
   origin: config.FRONTEND_URL,
   credentials: true,
 }));
-
-// Body parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Request logging
 app.use(logger);
-
-// Rate limiting for API routes
 app.use('/api', apiLimiter);
 
 // ============================================
 // ROUTES
 // ============================================
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
     success: true,
@@ -51,7 +41,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API info endpoint
 app.get('/api', (req, res) => {
   res.status(200).json({
     success: true,
@@ -68,10 +57,8 @@ app.get('/api', (req, res) => {
   });
 });
 
-// Register module routes
 app.use('/api/auth', authRoutes);
 
-// 404 handler
 app.all('*', (req, res) => {
   res.status(404).json({
     success: false,
@@ -79,7 +66,6 @@ app.all('*', (req, res) => {
   });
 });
 
-// Global error handler
 app.use(errorHandler);
 
 // ============================================
@@ -90,13 +76,16 @@ const startServer = async () => {
   try {
     console.log('🚀 Starting NGU Admissions Backend...\n');
 
-    // Connect to MongoDB
-    await connectDB();
+    // Try MongoDB (don't fail if it doesn't connect)
+    try {
+      await connectDB();
+    } catch (error) {
+      console.log('⚠️  MongoDB not connected - Auth will work, but Applications/Documents won\'t\n');
+    }
 
-    // Test Supabase connection
+    // Test Supabase (critical for Auth)
     await testSupabaseConnection();
 
-    // Start Express server
     const PORT = config.PORT;
     app.listen(PORT, () => {
       console.log(`\n✅ Server running on http://localhost:${PORT}`);
@@ -112,12 +101,10 @@ const startServer = async () => {
   }
 };
 
-// Handle unhandled promise rejections
 process.on('unhandledRejection', (err) => {
   console.error('💥 UNHANDLED REJECTION! Shutting down...');
   console.error(err.name, err.message);
   process.exit(1);
 });
 
-// Start the server
 startServer();

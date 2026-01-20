@@ -8,19 +8,33 @@ class AuthService {
    */
   async register(email, password, fullName, role = 'applicant') {
     try {
-      // 1. Create user in Supabase Auth
-      const { data: authData, error: authError } = await supabase.auth.signUp({
+      // Check if user already exists first
+      const { data: existingProfile } = await supabase
+        .from('profiles')
+        .select('email')
+        .eq('email', email)
+        .single();
+
+      if (existingProfile) {
+        throw new AppError('User with this email already exists', 409);
+      }
+
+      // 1. Create user in Supabase Auth using ADMIN API
+      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
         email,
         password,
-        options: {
-          data: {
-            full_name: fullName,
-            role: role,
-          },
+        email_confirm: true, // Changed to true so user can login immediately
+        user_metadata: {
+          full_name: fullName,
+          role: role,
         },
       });
 
       if (authError) {
+        if (authError.message.includes('already registered')) {
+          throw new AppError('User with this email already exists', 409);
+        }
+        console.error('❌ Supabase auth error:', authError);
         throw new AppError(authError.message, 400);
       }
 
@@ -28,24 +42,42 @@ class AuthService {
         throw new AppError('User registration failed', 400);
       }
 
-      // 2. Create profile in Supabase profiles table
-      const { error: profileError } = await supabase
+      console.log('✅ Auth user created:', authData.user.id);
+
+      // 2. UPSERT profile (insert or update if exists)
+      const profileData = {
+        id: authData.user.id,
+        email: email,
+        full_name: fullName,
+        role: role,
+        email_verified: true, // Set to true since we're confirming email
+      };
+
+      console.log('📝 Upserting profile:', profileData);
+
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
-        .insert({
-          id: authData.user.id,
-          email: email,
-          full_name: fullName,
-          role: role,
-          email_verified: false,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
+        .upsert([profileData], { 
+          onConflict: 'id',
+          ignoreDuplicates: false 
+        })
+        .select()
+        .single();
 
       if (profileError) {
+        console.error('❌ Profile upsert error:');
+        console.error('   Code:', profileError.code);
+        console.error('   Message:', profileError.message);
+        console.error('   Details:', profileError.details);
+        
         // Rollback: Delete auth user if profile creation fails
+        console.log('🔄 Rolling back auth user...');
         await supabase.auth.admin.deleteUser(authData.user.id);
-        throw new AppError('Profile creation failed', 500);
+        
+        throw new AppError(`Profile creation failed: ${profileError.message}`, 500);
       }
+
+      console.log('✅ Profile created/updated:', profile.id);
 
       // 3. Generate JWT tokens
       const tokens = tokenManager.generateTokenPair({
@@ -60,7 +92,7 @@ class AuthService {
           email: email,
           fullName: fullName,
           role: role,
-          emailVerified: false,
+          emailVerified: true, // Changed to true
         },
         tokens,
       };
@@ -68,6 +100,7 @@ class AuthService {
       if (error instanceof AppError) {
         throw error;
       }
+      console.error('❌ Registration error:', error);
       throw new AppError(error.message || 'Registration failed', 500);
     }
   }
@@ -77,6 +110,8 @@ class AuthService {
    */
   async login(email, password) {
     try {
+      console.log('🔐 Login attempt for:', email);
+
       // 1. Authenticate with Supabase
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
@@ -84,12 +119,16 @@ class AuthService {
       });
 
       if (authError) {
+        console.error('❌ Supabase auth error:', authError.message);
         throw new AppError('Invalid email or password', 401);
       }
 
-      if (!authData.user) {
-        throw new AppError('Login failed', 401);
+      if (!authData.user || !authData.session) {
+        console.error('❌ No user or session returned');
+        throw new AppError('Invalid email or password', 401);
       }
+
+      console.log('✅ Auth successful for user:', authData.user.id);
 
       // 2. Get user profile
       const { data: profile, error: profileError } = await supabase
@@ -99,8 +138,11 @@ class AuthService {
         .single();
 
       if (profileError || !profile) {
+        console.error('❌ Profile not found for user:', authData.user.id);
         throw new AppError('User profile not found', 404);
       }
+
+      console.log('✅ Profile loaded:', profile.email);
 
       // 3. Generate JWT tokens
       const tokens = tokenManager.generateTokenPair({
@@ -123,6 +165,7 @@ class AuthService {
       if (error instanceof AppError) {
         throw error;
       }
+      console.error('❌ Login error:', error);
       throw new AppError('Login failed', 500);
     }
   }
